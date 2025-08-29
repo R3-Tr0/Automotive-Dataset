@@ -1,10 +1,5 @@
-# synthetic_automotive_sales_v4.py
-# Synthetic automotive sales dataset generator v4
-# - Prices bounded to [0, 20_000_000]
-# - Data skewed toward ₱1,000,000 (stronger for gasoline sedans & middle-income)
-# - Majority gasoline bias retained
-# - Regression-targetable adjustments kept
-
+# synthetic_automotive_sales_v4_ph.py
+# Synthetic automotive sales dataset generator v4 (PH price bands & caps)
 import numpy as np
 import pandas as pd
 import uuid
@@ -54,13 +49,13 @@ def generate_synthetic_sales(n_rows=1000,
             script_dir = os.path.dirname(os.path.abspath(__file__))
         except NameError:
             script_dir = os.getcwd()
-        out_path = os.path.join(script_dir, "synthetic_automotive_sales_v4.csv")
+        out_path = os.path.join(script_dir, "synthetic_automotive_sales_v5_ph.csv")
 
     # mapping of regression strength to numeric weight
-    strength_weight = {"high": 0.18, "moderate": 0.09, "low": 0.03, "negligible": 0.005}
+    strength_weight = {"high": 0.06, "moderate": 0.03, "low": 0.01, "negligible": 0.0025}
 
     # =========================================================
-    # Model specs as before (kept mostly unchanged)
+    # Model specs (brands/models are illustrative)
     # =========================================================
     model_specs = {
         "Aurion": {
@@ -107,38 +102,47 @@ def generate_synthetic_sales(n_rows=1000,
         }
     }
 
+    # Price bounds (Philippines mid-2025 guidance) and averages
+    PRICE_BOUNDS = {
+        "Gasoline": (600_000, 4_000_000),
+        "Diesel":   (900_000, 3_000_000),
+        "Hybrid":   (920_000, 10_000_000),
+        "Electric": (660_000, 5_900_000),
+        "Other":    (200_000, 4_000_000)
+    }
+    AVG_PRICE = {
+        "Gasoline": 1_250_000,
+        "Diesel":   1_750_000,
+        "Hybrid":   1_750_000,
+        "Electric": 1_350_000,
+        "Other":    1_000_000
+    }
+
     # static enums
     channels = ["Dealer Walk-in", "Online Lead", "Marketplace", "Fleet/Government", "Referral"]
     regions = ["NCR", "Luzon_North", "Luzon_South", "Visayas", "Mindanao"]
     genders = ["Male", "Female", "Other"]
     income_brackets = ["<20k", "20-40k", "40-70k", "70-120k", ">120k"]
-    income_weights = [0.05, 0.40, 0.35, 0.15, 0.05]  # skewed toward lower-middle & middle
+    income_weights = [0.05, 0.40, 0.35, 0.15, 0.05]
 
     # gasoline bias
     power_weights = {"Gasoline": 7.0, "Hybrid": 2.0, "Diesel": 1.5, "Electric": 1.0}
 
-    # build model catalog and adjusted base MSRPs (nudged as before)
+    # build model catalog and adjusted base MSRPs aligned to PH price bands
     model_catalog = []
     for brand, models in model_specs.items():
         for model_name, spec in models.items():
             power = spec["power"]
             body = spec["body"]
-            raw_base = float(spec.get("base_msrp", 800000))
-            adj_base = raw_base
-            if power == "Gasoline":
-                if body == "Sedan":
-                    adj_base = max(700_000, int(np.random.normal(1_020_000, 120_000)))
-                elif body in ("Hatchback", "Coupe"):
-                    adj_base = max(600_000, int(raw_base * np.random.uniform(0.95, 1.25)))
-                elif body in ("SUV", "Truck"):
-                    adj_base = max(1_100_000, int(raw_base * np.random.uniform(1.0, 1.4)))
-            elif power == "Hybrid":
-                adj_base = int(max(raw_base * 1.05, np.random.normal(1_200_000, 150_000)))
-            elif power == "Electric":
-                adj_base = int(max(raw_base * 1.1, np.random.normal(1_800_000, 300_000)))
-            elif power == "Diesel":
-                adj_base = int(raw_base * np.random.uniform(0.95, 1.2))
-            adj_base = int(max(200_000, adj_base))
+            raw_base = float(spec.get("base_msrp", AVG_PRICE.get(power, 800000)))
+            low, high = PRICE_BOUNDS.get(power, PRICE_BOUNDS["Other"])
+            mode = int(np.clip((raw_base + AVG_PRICE.get(power, raw_base)) / 2.0, low, high))
+            # sample adj base using triangular distribution to concentrate around mode (realistic markets)
+            adj_base = int(np.random.triangular(low, mode, high))
+            # small body-based uplift (SUVs/Trucks tend toward higher band)
+            if body in ("SUV", "Truck"):
+                adj_base = int(adj_base * np.random.uniform(1.03, 1.12))
+            adj_base = int(max(150_000, adj_base))
             model_catalog.append({
                 "brand": brand,
                 "model": model_name,
@@ -163,7 +167,7 @@ def generate_synthetic_sales(n_rows=1000,
     days = (end - start).days + 1
     date_pool = [start + timedelta(days=i) for i in range(days)]
 
-    # macro series (unchanged)
+    # macro series
     macro_df = []
     base_interest = 6.0
     base_fuel = 60.0
@@ -185,10 +189,8 @@ def generate_synthetic_sales(n_rows=1000,
     macro_df = pd.DataFrame(macro_df)
     macro_dict = macro_df.set_index('date').to_dict('index')
 
-    # Price bounds and target center for skew
-    PRICE_MIN = 0.0
-    PRICE_MAX = 20_000_000.0
-    TARGET_CENTER = 1_000_000.0  # center of skew
+    # TARGET_CENTER tuned to PH market averages (mild pull)
+    TARGET_CENTER = 1_300_000.0
 
     rows = []
     for i in range(n_rows):
@@ -234,42 +236,112 @@ def generate_synthetic_sales(n_rows=1000,
         transmission = random.choices(spec["transmissions"], k=1)[0]
         drivetrain = random.choice(spec["drivetrains"])
 
-        # Trim and year multipliers
+                # Trim and year multipliers (tamed for PH)
         trims = ["Base", "Mid", "Premium", "Limited"]
         trim = random.choices(trims, weights=[0.45,0.30,0.20,0.05])[0]
-        trim_mult = {"Base":0.95,"Mid":1.05,"Premium":1.2,"Limited":1.4}[trim]
+        trim_mult = {"Base":0.95, "Mid":1.05, "Premium":1.10, "Limited":1.20}[trim]
         year_mult = max(0.6, 1.0 - 0.06 * age)
 
-        baseline_unit = ((es_min + es_max) / 2.0 if power != "Electric" else (((es_min + es_max) / 2.0) * 1.341))
-        perf_score = (power_hp / max(1, baseline_unit))
-        perf_score = float(perf_score)
+        # Performance baseline
+        baseline_unit = ((es_min + es_max) / 2.0 if power != "Electric" 
+                         else (((es_min + es_max) / 2.0) * 1.341))
+        perf_score = float(power_hp / max(1, baseline_unit))
 
-        channel_uplift = {"Dealer Walk-in":1.00, "Online Lead":1.02, "Marketplace":1.03, "Fleet/Government":0.96, "Referral":0.99}[sales_channel]
+        # Sales channel uplift
+        channel_uplift = {
+            "Dealer Walk-in":1.00, "Online Lead":1.02,
+            "Marketplace":1.03, "Fleet/Government":0.96,
+            "Referral":0.99
+        }[sales_channel]
 
-        # initial MSRP built from adj_base_msrp and features
-        msrp = base_msrp * (1 + 0.25 * (perf_score - 1)) * trim_mult * year_mult
-        msrp *= (1 + 0.03 * (spec["safety"] - 3) + 0.02 * (spec["reliability"] - 3.8))
+        # ---- MSRP calculation (aligned to PH market) ----
+        msrp = base_msrp
+        # performance effect: reduced weight (0.12 vs 0.25)
+        msrp *= (1 + 0.12 * (perf_score - 1))
+        # trim effect
+        msrp *= trim_mult
+        # age depreciation
+        msrp *= year_mult
+        # safety/reliability
+        msrp *= (1 + 0.02 * (spec["safety"] - 3) + 0.015 * (spec["reliability"] - 3.8))
+        # macro used car index
         macro = macro_dict[txn_date_only]
-        msrp *= (1 + 0.001 * (macro["used_car_index"] - 100))
-        msrp = round(msrp * np.random.uniform(0.98, 1.06) * channel_uplift, 2)
+        msrp *= (1 + 0.0006 * (macro["used_car_index"] - 100))
+        # noise + channel uplift
+        msrp = msrp * np.random.uniform(0.98, 1.06) * channel_uplift
 
-        # income influence
+        # --- NEW: Pull-to-target adjustment ---
+        low, high = PRICE_BOUNDS.get(power, PRICE_BOUNDS["Other"])
+        target_avg = AVG_PRICE.get(power, TARGET_CENTER)
+        
+        # blend msrp towards target average (keeps variation but re-centers)
+        blend_weight = 0.4  # higher = stronger pull
+        msrp = (1 - blend_weight) * msrp + blend_weight * target_avg
+        
+        # enforce Philippine price bands
+        msrp = np.clip(msrp, low, high)
+        
+        msrp = round(msrp, 2)
+
+
+        # income influence (kept mild)
         income = random.choices(income_brackets, weights=income_weights, k=1)[0]
-        income_mult = {"<20k":0.85, "20-40k":0.95, "40-70k":1.00, "70-120k":1.08, ">120k":1.15}[income]
+        income_mult = {"<20k":0.90, "20-40k":0.96, "40-70k":1.00, "70-120k":1.07, ">120k":1.12}[income]
         msrp *= income_mult
 
-        # nudge gasoline cars toward 7-digit center (kept as before)
+        # --- fuel-specific nudges ---
         if power == "Gasoline":
-            if msrp < 800_000:
-                msrp *= np.random.uniform(1.08, 1.25)
-            msrp = round(msrp * np.random.uniform(0.98, 1.06), 2)
+            if msrp > 1_600_000:
+                msrp *= np.random.uniform(0.88, 0.98)
+        elif power == "Hybrid":
+            if msrp > 2_500_000:
+                msrp *= np.random.uniform(0.85, 0.95)
+        elif power == "Electric":
+            if msrp > 2_000_000:
+                msrp *= np.random.uniform(0.85, 0.95)
 
-        if body in ("Coupe",):
-            msrp = round(msrp * np.random.uniform(1.05, 1.25), 2)
-        if power == "Electric":
-            msrp = round(msrp * np.random.uniform(1.02, 1.20), 2)
+        # Coupe premium
+        if body == "Coupe":
+            msrp *= np.random.uniform(1.04, 1.12)
 
-        # Inventory & discount logic (unchanged)
+               # --- FINAL: enforce PH price realism ---
+        low, high = PRICE_BOUNDS.get(power, PRICE_BOUNDS["Other"])
+        target_avg = AVG_PRICE.get(power, TARGET_CENTER)
+
+        # segment-specific floors
+        segment_floors = {
+            "Gasoline": 800_000,
+            "Diesel": 1_000_000,
+            "Hybrid": 1_200_000,
+            "Electric": 1_300_000,
+            "Other": 600_000
+        }
+        floor = segment_floors.get(power, low)
+
+        # body-specific caps (tighter than global caps)
+        if power == "Gasoline":
+            cap = 1_600_000 if body in ("Sedan", "Hatchback", "Coupe") else 2_200_000
+        elif power == "Diesel":
+            cap = 3_000_000 if body in ("SUV", "Truck") else 2_200_000
+        elif power == "Hybrid":
+            cap = 2_800_000 if body in ("SUV",) else 2_200_000
+        elif power == "Electric":
+            cap = 2_200_000 if body in ("SUV",) else 2_000_000
+        else:
+            cap = high
+
+        # apply clamp first
+        msrp = float(np.clip(msrp, floor, cap))
+
+        # distribution shaping: light triangular pull around target
+        blend_weight = {"Gasoline":0.7, "Diesel":0.55, "Hybrid":0.5, "Electric":0.6}.get(power, 0.6)
+        mode_price = np.clip(target_avg, floor, cap)
+        msrp = (1-blend_weight)*msrp + blend_weight*np.random.triangular(floor, mode_price, cap)
+
+        # re-clamp to ensure inside bounds
+        msrp = float(np.clip(msrp, floor, cap))
+
+        # Inventory & discount logic
         days_on_lot = int(np.random.exponential(scale=20))
         month_end = txn_date.day > 24
         inventory_pressure = min(1.0, days_on_lot / 90)
@@ -277,13 +349,13 @@ def generate_synthetic_sales(n_rows=1000,
         if quantity > 1 or sales_channel == "Fleet/Government":
             fleet_discount = np.random.uniform(0.02, 0.12)
         promo_flag = int(random.random() < (0.18 if sales_channel != "Fleet/Government" else 0.25))
-        promo_depth = np.random.uniform(0.01, 0.12) if promo_flag else 0.0
+        promo_depth = np.random.uniform(0.01, 0.10) if promo_flag else 0.0
         dealer_neg = np.random.normal(loc=0.0, scale=0.02)
 
-        # demand signals (unchanged)
+        # demand signals
         base_leads = 3 + 0.8 * (trim_mult - 1) + 0.002 * (power_hp) - 0.000001 * msrp
         channel_lead_mod = {"Dealer Walk-in":1.0, "Online Lead":1.3, "Marketplace":1.2, "Fleet/Government":2.0, "Referral":1.1}[sales_channel]
-        leads = max(1, int(np.random.poisson(max(0.5, base_leads * channel_lead_mod))))
+        leads = max(1, int(np.random.poisson(max(0.5, base_leads * channel_lead_mod)) ))
         gender_effect = {"Male":0.05, "Female":-0.02, "Other":0.0}
         cust_age = int(np.clip(np.random.normal(37, 11), 18, 75))
         gender = random.choice(genders)
@@ -294,21 +366,25 @@ def generate_synthetic_sales(n_rows=1000,
         test_drive_prob = min(0.95, 0.40 + 0.06*(trim_mult-1) + 0.001*(power_hp/100) + gender_effect.get(gender, 0.0))
         test_drives = min(leads, int(np.random.binomial(leads, max(0.05, test_drive_prob * region_test_mod * age_test_mod))))
 
-        # discount fraction (unchanged)
-        base_disc = 0.02 + 0.08*inventory_pressure + (0.03 if month_end else 0.0) + promo_depth + dealer_neg + fleet_discount
+        # discount fraction
+        base_disc = 0.02 + 0.06*inventory_pressure + (0.02 if month_end else 0.0) + promo_depth + dealer_neg + fleet_discount
         demand_modifier = max(0.0, 1.0 - 0.02 * test_drives)
         fuel_price = macro["fuel_price_php_l"]
         if power == "Electric":
-            fuel_modifier = max(0.7, 1.0 - 0.008*(fuel_price - 60))
+            fuel_modifier = max(0.8, 1.0 - 0.006*(fuel_price - 60))
         else:
-            fuel_modifier = 1.0 + 0.004*(fuel_price - 60)
-        channel_disc_mod = {"Dealer Walk-in":1.0, "Online Lead":0.95, "Marketplace":0.9, "Fleet/Government":0.85, "Referral":0.98}[sales_channel]
-        discount_frac = max(0, min(0.45, base_disc * demand_modifier * fuel_modifier * channel_disc_mod))
+            fuel_modifier = 1.0 + 0.003*(fuel_price - 60)
+        channel_disc_mod = {"Dealer Walk-in":1.0, "Online Lead":0.98, "Marketplace":0.95, "Fleet/Government":0.9, "Referral":0.98}[sales_channel]
 
-        # base listed price before regression adjustment
-        listed_price = round(msrp * np.random.uniform(0.99, 1.03), 2)
+        income_discount_map = {"<20k":1.20, "20-40k":1.05, "40-70k":1.00, "70-120k":0.92, ">120k":0.85}
+        income_disc_mult = income_discount_map.get(income, 1.0)
 
-        # Financing, trade-in, reliability, safety (unchanged)
+        discount_frac = max(0, min(0.25, base_disc * demand_modifier * fuel_modifier * channel_disc_mod * income_disc_mult))
+
+        # base listed price before regression adjustment (anchored to MSRP)
+        listed_price = round(msrp * np.random.uniform(0.995, 1.005), 2)
+
+        # Financing, trade-in, reliability, safety
         tax_pct = np.random.choice([0.12, 0.12, 0.12, 0.10, 0.14])
 
         region_reg_mult = {"NCR":1.08, "Luzon_North":1.00, "Luzon_South":0.98, "Visayas":0.99, "Mindanao":0.97}[customer_location]
@@ -319,8 +395,7 @@ def generate_synthetic_sales(n_rows=1000,
         base_finance_prob = 0.55 - 0.02 * (interest_rate - 6.0)
         age_finance_mod = max(0.25, 1.0 - (cust_age - 30)/100.0)
         income_fin_mod = {"<20k":1.05, "20-40k":1.0, "40-70k":0.95, "70-120k":0.9, ">120k":0.8}[income]
-        financed = (random.random() < (base_finance_prob * age_finance_mod * income_fin_mod)) if False else (random.random() < (base_finance_prob * age_finance_mod * income_fin_mod))  # keep logic consistent
-        # The above line intentionally preserves variable names used earlier (age_fin_mod) and won't raise in normal run.
+        financed = (random.random() < (base_finance_prob * age_finance_mod * income_fin_mod))
         if financed:
             months = random.choices([12,24,36,48,60,72,84], weights=[5,10,20,25,25,10,5], k=1)[0]
             rate = max(2.5, np.random.normal(loc=interest_rate + 3.5, scale=1.0))
@@ -389,58 +464,57 @@ def generate_synthetic_sales(n_rows=1000,
             val = max(-2.0, min(2.0, float(val)))
             regression_adjustment += w * val
 
-        noise = np.random.normal(loc=0.0, scale=0.01)
+        regression_adjustment = float(np.clip(regression_adjustment, -0.08, 0.08))
+        noise = np.random.normal(loc=0.0, scale=0.005)
 
         # apply regression adjustment to listed_price (if not missing)
         if not pd.isna(listed_price):
-            listed_price = round(msrp * (1.0 + regression_adjustment + noise) * np.random.uniform(0.995, 1.005) * channel_uplift, 2)
+            listed_price = round(msrp * (1.0 + regression_adjustment + noise) * np.random.uniform(0.998, 1.002) * channel_uplift, 2)
         else:
             listed_price = np.nan
 
-        # ---------------------------
-        # NEW: Pull-to-1M skew + enforce bounds [0, 20M]
-        # - stronger pull for gasoline sedans and middle-income buyers
-        # - then clamp strictly between PRICE_MIN and PRICE_MAX
-        # ---------------------------
+        # Mild pull-to-market-center but keep small and ensure caps later
         if not pd.isna(listed_price):
-            # base pull strength (by power & body)
             if power == "Gasoline" and body == "Sedan":
-                base_pull = 0.35
-            elif power == "Gasoline":
                 base_pull = 0.18
-            elif power == "Hybrid":
+            elif power == "Gasoline":
                 base_pull = 0.10
+            elif power == "Hybrid":
+                base_pull = 0.06
             elif power == "Diesel":
-                base_pull = 0.08
-            else:  # Electric & others
+                base_pull = 0.05
+            else:
                 base_pull = 0.03
 
-            # increase pull if income is middle-class (skew toward 1M)
-            income_pull_map = {"<20k":0.12, "20-40k":0.22, "40-70k":0.35, "70-120k":0.15, ">120k":0.06}
-            income_boost = income_pull_map.get(income, 0.15)
+            income_pull_map = {"<20k":0.06, "20-40k":0.12, "40-70k":0.20, "70-120k":0.10, ">120k":0.03}
+            income_boost = income_pull_map.get(income, 0.10)
 
-            # final pull strength capped to avoid overpowering base logic
-            pull_strength = min(0.85, base_pull + 0.5 * income_boost)
+            raw_alpha = 0.05 * (base_pull + income_boost)
+            alpha = float(np.clip(raw_alpha, 0.005, 0.10))
 
-            # sample a modest target around TARGET_CENTER to avoid deterministic center
-            target_sample = float(np.random.normal(TARGET_CENTER, 200_000))
-            # combine using weighted average (keeps distribution shape but pulls mass toward 1M)
-            listed_price = float(round(listed_price * (1.0 - pull_strength) + target_sample * pull_strength, 2))
+            target_sample = float(np.random.normal(TARGET_CENTER, 120_000))
+            listed_price = float(round(listed_price * (1.0 - alpha) + target_sample * alpha, 2))
 
-            # enforce hard bounds
-            listed_price = float(np.clip(listed_price, PRICE_MIN, PRICE_MAX))
         # ---------------------------
-
-        # recompute sale/total/taxes using clipped listed_price
-        sale_price = round(listed_price * (1 - discount_frac), 2) if not pd.isna(listed_price) else np.nan
-        # ensure sale_price within bounds as well
-        if not pd.isna(sale_price):
-            sale_price = float(np.clip(sale_price, PRICE_MIN, PRICE_MAX))
-        total_price = round(sale_price * quantity, 2) if not pd.isna(sale_price) else np.nan
-        if not pd.isna(total_price):
-            total_price = float(np.clip(total_price, PRICE_MIN, PRICE_MAX))
-
-        taxes = round(total_price * tax_pct, 2) if not pd.isna(total_price) else np.nan
+        # Enforce price caps per powertrain (PH mid-2025 bands)
+        # ---------------------------
+        if not pd.isna(listed_price):
+            low, high = PRICE_BOUNDS.get(power, PRICE_BOUNDS["Other"])
+            listed_price = float(np.clip(listed_price, low, high))
+        # recompute sale/total/taxes using the (capped) listed_price
+        if not pd.isna(listed_price):
+            sale_price = round(listed_price * (1 - discount_frac), 2)
+            # ensure sale price is not greater than listed and not below minimum band (keeps realism)
+            low, high = PRICE_BOUNDS.get(power, PRICE_BOUNDS["Other"])
+            sale_price = float(np.clip(sale_price, low, listed_price))
+            total_price = round(sale_price * quantity, 2)
+            # ensure total price also respects aggregated caps (min/max times quantity)
+            total_price = float(np.clip(total_price, low * quantity, high * quantity))
+            taxes = round(total_price * tax_pct, 2)
+        else:
+            sale_price = np.nan
+            total_price = np.nan
+            taxes = np.nan
 
         # Compose row
         row = {
@@ -494,7 +568,7 @@ def generate_synthetic_sales(n_rows=1000,
 
     df = pd.DataFrame(rows)
 
-    # Order columns (unchanged)
+    # Order columns
     cols = ["transaction_id","date","dealer_id","customer_id","sales_channel","brand","model","trim","model_year","body_type","powertrain",
             "power_hp","transmission","drivetrain","quantity","listed_price","sale_price","total_price","listed_minus_sale",
             "price_gap_pct","taxes","registration_fee","financed","finance_months","finance_rate_pct","down_payment",
